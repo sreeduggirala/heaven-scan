@@ -1,0 +1,4 @@
+Restart script in case program crashes
+
+tmux kill-session -t heaven 2>/dev/null || true
+tmux new -d -s heaven 'cd /root/heaven-scan && source venv/bin/activate && uvicorn src.app:app --host 0.0.0.0 --port 8443'
