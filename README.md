@@ -1,4 +1,4 @@
-# Heaven Scanner
+# Heaven Scan
 
 Heaven Scanner is a **FastAPI-based webhook service** that listens for
 new token launches on the **Heaven DEX** via **Helius webhooks**,
