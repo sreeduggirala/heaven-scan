@@ -1,6 +1,6 @@
-# Heaven Scanner
+# Heaven Scan
 
-Heaven Scanner is a **FastAPI-based webhook service** that listens for
+Heaven Scan is a **FastAPI-based webhook service** that listens for
 new token launches on the **Heaven DEX** via **Helius webhooks**,
 enriches them with **DEXScreener data**, and broadcasts formatted alerts
 to a **Telegram channel**.
@@ -48,8 +48,8 @@ to a **Telegram channel**.
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/<your-username>/heaven-scanner.git
-cd heaven-scanner
+git clone https://github.com/<your-username>/heaven-scan.git
+cd heaven-scan
 ```
 
 ### 2. Create a virtual environment and install dependencies
@@ -104,17 +104,17 @@ curl -X POST "https://api.helius.xyz/v0/webhooks?api-key=YOUR_KEY"   -H "Content
 ### **Option A: systemd (recommended)**
 
 ```bash
-sudo nano /etc/systemd/system/heaven-scanner.service
+sudo nano /etc/systemd/system/heaven-scan.service
 ```
 
     [Unit]
-    Description=Heaven Scanner FastAPI
+    Description=Heaven Scan FastAPI
     After=network.target
 
     [Service]
-    WorkingDirectory=/opt/heaven-scanner
-    EnvironmentFile=/opt/heaven-scanner/.env
-    ExecStart=/opt/heaven-scanner/venv/bin/python /opt/heaven-scanner/app.py
+    WorkingDirectory=/opt/heaven-scan
+    EnvironmentFile=/opt/heaven-scan/.env
+    ExecStart=/opt/heaven-scan/venv/bin/python /opt/heaven-scan/app.py
     Restart=always
     User=ubuntu
     Group=ubuntu
@@ -126,9 +126,9 @@ Enable and start:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable heaven-scanner
-sudo systemctl start heaven-scanner
-sudo journalctl -u heaven-scanner -f
+sudo systemctl enable heaven-scan
+sudo systemctl start heaven-scan
+sudo journalctl -u heaven-scan -f
 ```
 
 ### **Option B: Docker Compose**
