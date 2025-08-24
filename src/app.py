@@ -8,7 +8,7 @@ from telethon.errors import ChannelPrivateError
 from dexscreener import fetch_pairs_for_mint, pick_heaven_pair, format_pair_markdown
 from telegram import send_markdown, get_client
 
-HEAVEN_PROGRAM_ID = "HKZCA4EJ2e16P9n2afZHXm9ZvZkPcFAp9ZpA9E48Kyma"
+
 # From IDL.events[].discriminator for CreateStandardLiquidityPoolEvent:
 CSLPE_DISC = bytes([189, 56, 131, 144, 75, 63, 249, 148])  # \xBD8\x83\x90K?\xF9\x94
 
@@ -31,7 +31,7 @@ app = FastAPI(lifespan=lifespan)
 
 @app.get("/healthz")
 async def healthz():
-    return {"ok": True, "program": HEAVEN_PROGRAM_ID}
+    return {"ok": True}
 
 # ---------- helpers to read logs from Helius ----------
 def _iter_log_batches(payload: Dict[str, Any]) -> List[List[str]]:
