@@ -1,17 +1,18 @@
 import os, base64, struct, asyncio
 from typing import Any, Dict, List, Tuple, Optional
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException
+
 import aiohttp
+from fastapi import FastAPI, Request, HTTPException
 from telethon.errors import ChannelPrivateError
 
 from dexscreener import fetch_pairs_for_mint, pick_heaven_pair, format_pair_markdown
 from telegram import send_markdown, get_client
 
+# Heaven: CreateStandardLiquidityPoolEvent (8-byte Anchor discriminator)
+CSLPE_DISC = bytes([189, 56, 131, 144, 75, 63, 249, 148])
 
-# From IDL.events[].discriminator for CreateStandardLiquidityPoolEvent:
-CSLPE_DISC = bytes([189, 56, 131, 144, 75, 63, 249, 148])  # \xBD8\x83\x90K?\xF9\x94
-
+# ───────────────── runtime state ─────────────────
 _session: Optional[aiohttp.ClientSession] = None
 _seen: set[str] = set()
 _seen_lock = asyncio.Lock()
@@ -20,7 +21,7 @@ _seen_lock = asyncio.Lock()
 async def lifespan(app: FastAPI):
     global _session
     _session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12))
-    await get_client()
+    await get_client()  # warm Telethon
     try:
         yield
     finally:
@@ -33,87 +34,86 @@ app = FastAPI(lifespan=lifespan)
 async def healthz():
     return {"ok": True}
 
-# ---------- helpers to read logs from Helius ----------
+# ───────────────── helpers ─────────────────
 def _iter_log_batches(payload: Dict[str, Any]) -> List[List[str]]:
     """
-    Works for both Helius Enhanced and Raw webhooks.
-    Returns a list of `logMessages` arrays (one per tx).
+    Return a list of log arrays. Supports both Enhanced and Raw Helius shapes.
+    Accepts:
+      - {"transactions":[{"meta":{"logMessages":[...]}}]}
+      - {"data":[{"transaction":{"meta":{"logMessages":[...]}}}]}
+      - {"data":[{"logs":[...]}]}
+      - or payload is already a list of notes
     """
     out: List[List[str]] = []
 
-    # Case A: raw webhook -> { "transactions": [ { "transaction": {...}, "meta": {...} }, ... ] }
-    txs = payload.get("transactions")
-    if isinstance(txs, list):
-        for t in txs:
-            meta = t.get("meta") or t.get("transaction", {}).get("meta") or {}
-            logs = meta.get("logMessages")
-            if isinstance(logs, list) and logs:
-                out.append(logs)
+    def add(logs: Any):
+        if isinstance(logs, list) and logs:
+            out.append(logs)
 
-    # Case B: enhanced/custom -> array of notes with tx/meta/logs in different places
-    notes = payload if isinstance(payload, list) else payload.get("data")
-    if isinstance(notes, list):
-        for n in notes:
-            # enhanced: note.transaction.meta.logMessages
-            tx = n.get("transaction") or n.get("tx") or {}
-            meta = tx.get("meta") or {}
-            logs = meta.get("logMessages")
-            if isinstance(logs, list) and logs:
-                out.append(logs)
-            # logs sometimes appear directly
-            elif isinstance(n.get("logs"), list) and n["logs"]:
-                out.append(n["logs"])
+    # raw
+    for t in payload.get("transactions", []) or []:
+        add((t.get("meta") or t.get("transaction", {}).get("meta") or {}).get("logMessages"))
+
+    # enhanced/custom
+    notes = payload if isinstance(payload, list) else (payload.get("data") or [])
+    for n in notes:
+        tx = n.get("transaction") or n.get("tx") or {}
+        add((tx.get("meta") or {}).get("logMessages"))
+        add(n.get("logs"))
 
     return out
 
-
-# base58 without dependency
-_ALPHABET = b'123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+# tiny base58 (keeps deps light)
+_ALPH = b'123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
 def _bs58(b: bytes) -> str:
     pad = len(b) - len(b.lstrip(b'\0'))
-    num = int.from_bytes(b, "big")
+    n = int.from_bytes(b, "big")
     out = bytearray()
-    while num > 0:
-        num, rem = divmod(num, 58)
-        out.append(_ALPHABET[rem])
-    out.extend(_ALPHABET[0] for _ in range(pad))
+    while n:
+        n, r = divmod(n, 58)
+        out.append(_ALPH[r])
+    out += _ALPH[:1] * pad
     out.reverse()
-    return out.decode("ascii") if out else "1" * (pad or 1)
+    return out.decode() or "1" * (pad or 1)
 
 def _event_blobs_from_logs(logs: List[str]) -> List[bytes]:
     blobs: List[bytes] = []
     prefix = "Program log: EVENT:"
     for line in logs:
         if prefix in line:
+            b64 = line.split(prefix, 1)[1].strip()
             try:
-                b64 = line.split(prefix, 1)[1].strip()
                 blobs.append(base64.b64decode(b64))
             except Exception:
-                continue
+                pass
     return blobs
 
 def _decode_create_standard_pool(blob: bytes) -> Optional[Tuple[str, str]]:
     """
-    blob = 8(discriminator) + 4*32(pubkeys) + 2(u16) + 8(u64) + 8(u64)
-    returns (mint, pool_id)
+    Layout:
+      8  discriminator
+      32 pool_id
+      32 payer
+      32 creator
+      32 mint
+      2  config_version (u16)
+      8  initial_token_reserve (u64 LE)
+      8  initial_virtual_wsol_reserve (u64 LE)
+    Returns (mint, pool_id) or None.
     """
-    # discriminator check
-    if len(blob) < 8 or blob[:8] != CSLPE_DISC:
+    if len(blob) < 8 + 32*4 + 2 + 8 + 8 or blob[:8] != CSLPE_DISC:
         return None
     off = 8
     pool_id = _bs58(blob[off:off+32]); off += 32
-    _payer  = _bs58(blob[off:off+32]); off += 32
-    _creator= _bs58(blob[off:off+32]); off += 32
-    mint    = _bs58(blob[off:off+32]); off += 32
+    off += 32  # payer skip
+    off += 32  # creator skip
+    mint = _bs58(blob[off:off+32]); off += 32
+    # ensure remaining bytes exist; we don't need the values
     if len(blob) < off + 2 + 8 + 8:
         return None
-    # u16 + two u64s (we don’t use them here)
-    _cfg, = struct.unpack_from("<H", blob, off); off += 2
-    _tok, = struct.unpack_from("<Q", blob, off); off += 8
-    _wsl, = struct.unpack_from("<Q", blob, off); off += 8
     return mint, pool_id
 
-# ---------- pipeline ----------
+# ───────────────── pipeline ─────────────────
 async def _process_mint(mint: str, pool_id: str):
     global _session
     if _session is None:
@@ -131,12 +131,12 @@ async def _process_mint(mint: str, pool_id: str):
     if not dp:
         return
 
-    msg = "🆕 Heaven Launch\n\n" + format_pair_markdown(dp)
     try:
-        await send_markdown(msg)
+        await send_markdown("🆕 Heaven Launch\n\n" + format_pair_markdown(dp))
     except ChannelPrivateError:
         print("ChannelPrivateError: bot cannot post to TG_CHANNEL.")
 
+# ───────────────── webhook ─────────────────
 @app.post("/webhooks")
 async def helius_webhook(req: Request):
     try:
@@ -144,24 +144,21 @@ async def helius_webhook(req: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="invalid json")
 
-    batches = _iter_log_batches(payload)
-    if not batches:
-        return {"ok": True, "processed": 0}
+    found: List[Tuple[str, str]] = []
+    seen_local: set[str] = set()
 
-    found = []
-    seen = set()
-    for logs in batches:
+    for logs in _iter_log_batches(payload):
         for blob in _event_blobs_from_logs(logs):
             parsed = _decode_create_standard_pool(blob)
-            if parsed:
-                mint, pool_id = parsed
-                key = f"{mint}:{pool_id}"
-                if key not in seen:
-                    seen.add(key)
-                    found.append(parsed)
+            if not parsed:
+                continue
+            mint, pool = parsed
+            k = f"{mint}:{pool}"
+            if k not in seen_local:
+                seen_local.add(k)
+                found.append(parsed)
 
-    for mint, pool_id in found:
-        asyncio.create_task(_process_mint(mint, pool_id))
+    for mint, pool in found:
+        asyncio.create_task(_process_mint(mint, pool))
 
     return {"ok": True, "processed": len(found)}
-
