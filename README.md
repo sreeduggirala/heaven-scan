@@ -78,24 +78,8 @@ python app.py
 
 The app will expose:
 
-- `POST /webhooks/helius` -- endpoint for Helius to send events
+- `POST /webhooks` -- endpoint for Helius to send events
 - `GET /healthz` -- health check
-
----
-
-## Helius Webhook Setup
-
-Create a webhook that listens to the Heaven DEX program and points to
-your server:
-
-```bash
-curl -X POST "https://api.helius.xyz/v0/webhooks?api-key=YOUR_KEY"   -H "Content-Type: application/json"   -d '{
-    "webhookURL": "https://your-domain.com/webhooks/helius",
-    "transactionTypes": ["ALL"],
-    "accountAddresses": ["pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"],
-    "webhookType": "enhanced"
-  }'
-```
 
 ---
 
